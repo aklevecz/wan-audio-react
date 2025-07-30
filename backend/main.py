@@ -1,5 +1,4 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
-from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 from pathlib import Path
@@ -42,13 +41,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Entry point for Generation
-# Video may be preset instead of uploaded
 @app.post("/session/{session_id}/upload_video_and_image")
 async def upload_video_and_image(
     session_id: str,
     video_file: UploadFile = File(...),
-    image_file: Optional[UploadFile] = File(None),
+    image_file: UploadFile = File(...),
     prompt: str = Form(""),
     num_extensions: int = Form(1),
     invert_mask: bool = Form(False),
@@ -59,33 +56,26 @@ async def upload_video_and_image(
     """Upload both a video file and image file with processing options."""
     print("calling upload_video_and_image")
     try:
-        # Session management -- should be adapted to Kaiber session usage
+        # Validate session exists
         session = session_manager.get_session(session_id)
         if not session:
-            # Naively creating a session for testing
             session_manager.create_session_raw(session_id)
         #     raise HTTPException(status_code=404, detail="Session not found")
-
-        # Video file is the masked audio reactive video
-        # Note: Probably providing a preset video file instead of uploading from the frontend
+        # Validate video file
         if not video_file.filename:
             raise HTTPException(status_code=400, detail="No video filename provided")
         video_filename = video_file.filename.lower()
         if not video_filename.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
             raise HTTPException(status_code=400, detail="Unsupported video type. Use MP4, AVI, MOV, MKV, or WebM")
         
-        # Initialize image variables
-        image_status = "not_provided"
-        relative_image_path = None
+        # Validate image file
+        if not image_file.filename:
+            raise HTTPException(status_code=400, detail="No image filename provided")
+        image_filename = image_file.filename.lower()
+        if not image_filename.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp')):
+            raise HTTPException(status_code=400, detail="Unsupported image type. Use PNG, JPG, JPEG, BMP, or WebP")
         
-        # Image file is not required
-        if not image_file or not image_file.filename:
-            # raise HTTPException(status_code=400, detail="No image filename provided")
-            image_filename = None
-        else:
-            image_filename = image_file.filename.lower()
-            if not image_filename.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp')):
-                raise HTTPException(status_code=400, detail="Unsupported image type. Use PNG, JPG, JPEG, BMP, or WebP")
+        # session_dir = session_manager.get_session_dir(session_id)
         
         # Handle video file upload to R2
         video_data = await video_file.read()
@@ -98,9 +88,7 @@ async def upload_video_and_image(
             temp_video.write(video_data)
             temp_video_path = Path(temp_video.name)
         
-        
         try:
-            # Might not be necessary if we are using preset videos
             # Upload to R2
             r2_video_key = f"sessions/{session_id}/uploaded_videos/{video_safe_name}"
             video_upload_success = upload_file(temp_video_path, r2_video_key)
@@ -124,62 +112,62 @@ async def upload_video_and_image(
             # Clean up temporary file
             temp_video_path.unlink(missing_ok=True)
         
-        # Handle image file upload to R2 (only if image provided)
-        if image_filename is not None:
-            image_data = await image_file.read()
+        # Handle image file upload to R2
+        image_data = await image_file.read()
+        
+        # Convert image to JPG format to ensure compatibility
+        try:
+            from PIL import Image
+            import io
             
-            try:
-                from PIL import Image
-                import io
-                
-                # Open image from bytes and convert to RGB (removes alpha channel if present)
-                pil_image = Image.open(io.BytesIO(image_data)).convert('RGB')
-                
-                # Convert to JPG bytes
-                jpg_buffer = io.BytesIO()
-                pil_image.save(jpg_buffer, format='JPEG', quality=95, optimize=True)
-                jpg_data = jpg_buffer.getvalue()
-                
-            except Exception as e:
-                print(f"[ERROR] Failed to convert image to JPG: {e}")
-                raise HTTPException(status_code=400, detail=f"Failed to process image: {str(e)}")
+            # Open image from bytes and convert to RGB (removes alpha channel if present)
+            pil_image = Image.open(io.BytesIO(image_data)).convert('RGB')
             
-            # Use predictable filename - always overwrite with reference_image.jpg
-            image_safe_name = "reference_image.jpg"
+            # Convert to JPG bytes
+            jpg_buffer = io.BytesIO()
+            pil_image.save(jpg_buffer, format='JPEG', quality=95, optimize=True)
+            jpg_data = jpg_buffer.getvalue()
             
-            # Create temporary file for R2 upload with converted JPG data
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_image:
-                temp_image.write(jpg_data)
-                temp_image_path = Path(temp_image.name)
+        except Exception as e:
+            print(f"[ERROR] Failed to convert image to JPG: {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to process image: {str(e)}")
+        
+        # Use predictable filename - always overwrite with reference_image.jpg
+        image_safe_name = "reference_image.jpg"
+        
+        # Create temporary file for R2 upload with converted JPG data
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_image:
+            temp_image.write(jpg_data)
+            temp_image_path = Path(temp_image.name)
+        
+        try:
+            # Upload to R2
+            r2_image_key = f"sessions/{session_id}/reference_images/{image_safe_name}"
+            image_upload_success = upload_file(temp_image_path, r2_image_key)
             
-            try:
-                # Upload to R2
-                r2_image_key = f"sessions/{session_id}/reference_images/{image_safe_name}"
-                image_upload_success = upload_file(temp_image_path, r2_image_key)
-                
-                if not image_upload_success:
-                    raise HTTPException(status_code=500, detail=f"Failed to upload image '{image_file.filename}' to cloud storage")
-                
-                # Get R2 public URL
-                image_r2_url = get_public_url(r2_image_key)
-                print(f"[SUCCESS] Image uploaded to R2: {image_r2_url}")
-                
-                # Add to session metadata (store R2 URL instead of local path)
-                session_manager.add_reference_image(session_id, image_r2_url)
-                image_status = "uploaded"
-                relative_image_path = image_r2_url
-                
-            except ValueError as e:
-                # Handle R2 configuration issues
-                print(f"[ERROR] R2 configuration error during image upload: {e}")
-                raise HTTPException(status_code=503, detail="Cloud storage configuration error")
-            except Exception as e:
-                # Handle other R2 upload errors
-                print(f"[ERROR] Failed to upload image to R2: {e}")
-                raise HTTPException(status_code=500, detail=f"Cloud storage upload failed: {str(e)}")
-            finally:
-                # Clean up temporary file
-                temp_image_path.unlink(missing_ok=True)
+            if not image_upload_success:
+                raise HTTPException(status_code=500, detail=f"Failed to upload image '{image_file.filename}' to cloud storage")
+            
+            # Get R2 public URL
+            image_r2_url = get_public_url(r2_image_key)
+            print(f"[SUCCESS] Image uploaded to R2: {image_r2_url}")
+            
+            # Add to session metadata (store R2 URL instead of local path)
+            session_manager.add_reference_image(session_id, image_r2_url)
+            image_status = "uploaded"
+            relative_image_path = image_r2_url
+            
+        except ValueError as e:
+            # Handle R2 configuration issues
+            print(f"[ERROR] R2 configuration error during image upload: {e}")
+            raise HTTPException(status_code=503, detail="Cloud storage configuration error")
+        except Exception as e:
+            # Handle other R2 upload errors
+            print(f"[ERROR] Failed to upload image to R2: {e}")
+            raise HTTPException(status_code=500, detail=f"Cloud storage upload failed: {str(e)}")
+        finally:
+            # Clean up temporary file
+            temp_image_path.unlink(missing_ok=True)
         
         # Store processing options in session metadata
         processing_options = {
@@ -221,7 +209,9 @@ async def upload_video_and_image(
                 num_extensions=int(num_extensions),
                 resolution=str(resolution) if resolution is not None else "720p",
                 invert_mask=bool(invert_mask),
-                seed=seed if seed is not None else 42069 # Use fixed seed for now
+                seed=seed if seed is not None else 42069, # Use fixed seed for now
+                img_url=image_r2_url,
+                video_url=video_r2_url
             )
             sieve_job_id = sieve_job.job['id']
             print(f"[SUCCESS] Sieve job started asynchronously: {sieve_job_id}")
@@ -240,7 +230,7 @@ async def upload_video_and_image(
             "video_filename": video_file.filename,
             "video_upload_status": "uploaded_to_r2",
             "image_path": relative_image_path,
-            "image_filename": image_file.filename if image_file else None,
+            "image_filename": image_file.filename,
             "image_status": image_status,
             "processing_options": processing_options,
             "message": "Video and image uploaded successfully to cloud storage. Sieve processing started."
