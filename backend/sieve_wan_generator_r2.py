@@ -736,7 +736,7 @@ class WanVideoGeneratorR2:
 
                 final_output_video = result["combined_video"]
                 # Begin upload of combined file -- probably don't need initial and extension ultimately
-                upload_name = f"{generate_unique_id()}_wan_audio_reactive.png"
+                upload_name = f"{generate_unique_id()}_wan_audio_reactive.mp4"
                 r2_upload_path = f"init-images/{upload_name}"
 
                 print(f"Preparing for postgen upload.\n Media: {final_output_video.path}\n Upload path: {r2_upload_path}")
