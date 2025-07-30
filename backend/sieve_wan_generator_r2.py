@@ -32,6 +32,11 @@ def generate_unique_id():
     python_version="3.11",
     gpu=sieve.gpu.A100(),
     system_packages=["ffmpeg", "git", "wget", "curl"],
+    environment_variables=[
+        sieve.Env(name="MONGODB_URL", description=""),
+        sieve.Env(name="R2_ACCESS_KEY_ID", description="", default=""),
+        sieve.Env(name="R2_SECRET_ACCESS_KEY", description="", default=""),
+    ],
     python_packages=[
         # Core PyTorch packages
         "torch>=2.4.0",
