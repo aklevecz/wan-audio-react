@@ -1,0 +1,1 @@
+export const BACKEND_URL = "https://audio-reactive-paper.yaytso.art"
